@@ -1,0 +1,15 @@
+{
+  "name": "auto-pip-on-tab-switch",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Chrome 扩展「自动画中画」——视频播放中切换到其他标签页自动进入画中画",
+  "scripts": {
+    "icons": "node tools/gen-icons.mjs",
+    "package": "node tools/package.mjs",
+    "build": "node tools/gen-icons.mjs && node tools/package.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

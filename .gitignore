@@ -1,0 +1,6 @@
+# 打包产物（npm run package / npm run build 生成）
+build/
+
+# 依赖与系统文件
+node_modules/
+.DS_Store

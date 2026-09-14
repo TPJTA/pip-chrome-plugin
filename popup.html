@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>自动画中画</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="head">
+    <img class="logo" src="icons/icon48.png" alt="" width="28" height="28">
+    <div class="head-text">
+      <h1>自动画中画</h1>
+      <p class="status" id="status" data-state="loading">
+        <span class="dot"></span><span id="status-text">正在检测…</span>
+      </p>
+    </div>
+  </header>
+
+  <main class="panel">
+    <label class="row row--primary">
+      <span class="row-text">
+        <span class="row-title">切换标签页时进入画中画</span>
+        <span class="row-desc">视频正在播放时，切到其他标签页自动浮窗</span>
+      </span>
+      <input type="checkbox" id="enabled" class="switch">
+    </label>
+
+    <label class="row">
+      <span class="row-text">
+        <span class="row-title">返回标签页时自动退出</span>
+        <span class="row-desc">回到这个标签页后，把视频收回页面内</span>
+      </span>
+      <input type="checkbox" id="exitOnReturn" class="switch">
+    </label>
+
+    <label class="row">
+      <span class="row-text">
+        <span class="row-title">兼容模式</span>
+        <span class="row-desc">个别网站在首次切换时无法生效，可尝试开启</span>
+      </span>
+      <input type="checkbox" id="compatPriming" class="switch">
+    </label>
+  </main>
+
+  <button type="button" id="test" class="test-btn">手动进入 / 退出画中画</button>
+  <p class="hint" id="hint" hidden></p>
+
+  <footer class="foot">
+    仅在<b>切换标签页</b>时触发；切换到其他应用不会触发。
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>
