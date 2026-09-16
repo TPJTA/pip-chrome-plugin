@@ -33,14 +33,14 @@
       <input type="checkbox" id="exitOnReturn" class="switch">
     </label>
 
-    <p class="row-desc">连续自动浮窗需要浏览器支持，并在网站设置中允许「自动画中画」；请保持视频有声播放。</p>
+    <p class="row-desc">自动浮窗受浏览器用户交互限制，暂不保证连续切换生效。手动操作可使用视频自身的画中画按钮。</p>
   </main>
 
   <button type="button" id="test" class="test-btn">手动进入 / 退出画中画</button>
   <p class="hint" id="hint" hidden></p>
 
   <footer class="foot">
-    仅在<b>切换标签页</b>时触发；切换到其他应用不会触发。
+    <span id="version"></span> · 仅在<b>切换标签页</b>时尝试自动浮窗。
   </footer>
 
   <script src="popup.js"></script>

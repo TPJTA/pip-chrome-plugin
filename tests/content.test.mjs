@@ -6,11 +6,11 @@ import test from 'node:test';
 const source = readFileSync(new URL('../content.js', import.meta.url), 'utf8');
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-function setup({ supported = true, settings = {}, deferredReply = false, deferredEntry = false, deferredExit = false, exitFails = false } = {}) {
+function setup({ settings = {}, deferredReply = false, deferredEntry = false, deferredExit = false, exitFails = false } = {}) {
   const events = new Map();
   const replies = [];
-  let action, message, change, activation = false, finishEntry, finishExit;
-  const counts = { requests: 0, exits: 0 };
+  let message, change, activation = false, finishEntry, finishExit;
+  const counts = { requests: 0, exits: 0, mediaHandlers: 0 };
   const video = {
     paused: false, ended: false, readyState: 4, currentTime: 10,
     videoWidth: 1280, duration: 600, muted: false, volume: 1,
@@ -50,10 +50,7 @@ function setup({ supported = true, settings = {}, deferredReply = false, deferre
   };
   vm.runInNewContext(source, {
     window, document, chrome,
-    navigator: { mediaSession: { setActionHandler: (_, callback) => {
-      if (!supported) throw new TypeError('unsupported action');
-      action = callback;
-    } } }
+    navigator: { mediaSession: { setActionHandler: () => { counts.mediaHandlers++; } } }
   });
   return {
     counts, document, video, replies,
@@ -63,179 +60,94 @@ function setup({ supported = true, settings = {}, deferredReply = false, deferre
     browserClose() { document.pictureInPictureElement = null; events.get('leavepictureinpicture')?.(); },
     toggle() { return new Promise(resolve => message({ type: 'pip:toggle' }, {}, resolve)); },
     async visibility(state) { document.visibilityState = state; void events.get('visibilitychange')(); await flush(); },
-    native(reason = 'contentoccluded') {
-      // Browser-provided activation exists during the callback. A background round trip
-      // before requestPictureInPicture would lose it in this regression harness.
-      activation = true;
-      action({ reason });
-      activation = false;
-    },
     change(values) { change(Object.fromEntries(Object.entries(values).map(([k, v]) => [k, { newValue: v }])), 'sync'); },
     status() { let state; message({ type: 'pip:status' }, {}, value => { state = value; }); return state; }
   };
 }
 
-test('native callback supports repeated away/return cycles without another page click', async () => {
+async function enterByTabSwitch(env) {
+  env.gesture();
+  await env.visibility('hidden');
+}
+
+test('does not register, replace or clear the site media session handler', () => {
   const env = setup();
-  for (let i = 0; i < 3; i++) {
-    await env.visibility('hidden');
-    assert.equal(env.counts.requests, i, 'visibility handler must not race the native callback');
-    env.native();
-    await flush();
-    assert.equal(env.document.pictureInPictureElement, env.video);
-    await env.visibility('visible');
-    assert.equal(env.document.pictureInPictureElement, null);
-  }
-  assert.deepEqual(env.counts, { requests: 3, exits: 3 });
+  assert.equal(env.counts.mediaHandlers, 0);
 });
 
-test('disabled extension and paused videos do not enter native PiP', async () => {
+test('tab departure enters with activation and return closes', async () => {
   const env = setup();
-  await env.visibility('hidden');
-  env.change({ enabled: false });
-  env.native();
-  assert.equal(env.counts.requests, 0);
-  env.change({ enabled: true });
-  env.video.paused = true;
-  env.native();
-  assert.equal(env.counts.requests, 0);
-});
-
-test('late native callback after returning does not open PiP', async () => {
-  const env = setup();
-  await env.visibility('hidden');
+  await enterByTabSwitch(env);
+  assert.equal(env.document.pictureInPictureElement, env.video);
   await env.visibility('visible');
-  env.native();
-  assert.equal(env.counts.requests, 0);
-});
-
-test('returning while entry is pending closes the resulting window', async () => {
-  const env = setup({ deferredEntry: true });
-  await env.visibility('hidden');
-  env.native();
-  env.native();
-  assert.equal(env.counts.requests, 1, 'coalesce in-flight requests');
-  await env.visibility('visible');
-  env.finishEntry();
-  await flush();
-  assert.equal(env.document.pictureInPictureElement, null);
-  assert.equal(env.counts.exits, 1);
-});
-
-test('native window is cleaned up when background does not confirm a tab switch', async () => {
-  const env = setup({ deferredReply: true });
-  await env.visibility('hidden');
-  env.native();
-  await flush();
-  env.replies.shift()({ tabSwitch: false });
-  await flush();
   assert.equal(env.document.pictureInPictureElement, null);
 });
 
-test('legacy path ignores stale replies from an earlier hide event', async () => {
-  const env = setup({ supported: false, deferredReply: true });
-  env.gesture();
-  await env.visibility('hidden');
-  await env.visibility('visible');
-  await env.visibility('hidden');
-  env.replies.shift()({ tabSwitch: true });
-  await flush();
-  assert.equal(env.counts.requests, 0);
-  env.replies.shift()({ tabSwitch: true });
-  await flush();
-  assert.equal(env.counts.requests, 1);
-});
-
-test('legacy path reports consumed activation instead of attempting fake priming', async () => {
-  const env = setup({ supported: false });
-  env.gesture();
-  await env.visibility('hidden');
+test('second entry without fresh activation remains an explicit known limitation', async () => {
+  const env = setup();
+  await enterByTabSwitch(env);
   await env.visibility('visible');
   await env.visibility('hidden');
   assert.equal(env.document.pictureInPictureElement, null);
   assert.equal(env.status().needsGesture, true);
-  assert.equal(env.status().nativeAutoPip, false);
 });
 
-test('keep-floating setting uses legacy path and does not close on return', async () => {
-  const env = setup({ settings: { exitOnReturn: false } });
+test('popup exits even when the video is paused and automation is disabled', async () => {
+  const env = setup();
+  await enterByTabSwitch(env);
+  env.video.paused = true;
+  env.change({ enabled: false });
+  assert.equal((await env.toggle()).ok, true);
+  assert.equal(env.document.pictureInPictureElement, null);
+});
+
+test('browser close invalidates pending automatic requests in this hidden period', async () => {
+  const env = setup({ deferredReply: true });
   env.gesture();
   await env.visibility('hidden');
-  env.native();
-  await flush();
-  assert.equal(env.counts.requests, 1);
-  await env.visibility('visible');
-  assert.equal(env.document.pictureInPictureElement, env.video);
-});
-
-
-test('manual media control toggles an existing window off instead of trying to enter again', async () => {
-  const env = setup();
-  env.native('other');
-  await flush();
-  assert.equal(env.document.pictureInPictureElement, env.video);
-  env.native('other');
-  await flush();
-  assert.equal(env.document.pictureInPictureElement, null);
-  assert.deepEqual(env.counts, { requests: 1, exits: 1 });
-});
-
-test('popup exit blocks native reopen until the next genuine tab departure', async () => {
-  const env = setup();
-  await env.visibility('hidden');
-  env.native();
-  await flush();
-  const result = await env.toggle();
-  assert.equal(result.ok, true);
-  env.native();
-  await flush();
-  assert.equal(env.document.pictureInPictureElement, null);
-  assert.equal(env.counts.requests, 1);
-  // A duplicate hidden event must not rearm automatic entry.
-  await env.visibility('hidden');
-  env.native();
-  assert.equal(env.counts.requests, 1);
-  await env.visibility('visible');
-  await env.visibility('hidden');
-  env.native();
-  await flush();
-  assert.equal(env.document.pictureInPictureElement, env.video);
-});
-
-test('browser close button or video menu prevents automatic reopening', async () => {
-  const env = setup();
-  await env.visibility('hidden');
-  env.native();
-  await flush();
   env.browserClose();
-  env.native();
+  env.replies.shift()({ tabSwitch: true });
   await flush();
-  assert.equal(env.document.pictureInPictureElement, null);
-  assert.equal(env.counts.requests, 1);
+  assert.equal(env.counts.requests, 0);
 });
 
-test('popup can cancel an in-flight entry before the window exists', async () => {
+test('stale tab replies never reopen after returning', async () => {
+  const env = setup({ deferredReply: true });
+  env.gesture();
+  await env.visibility('hidden');
+  await env.visibility('visible');
+  await env.visibility('hidden');
+  env.replies.shift()({ tabSwitch: true });
+  await flush();
+  assert.equal(env.counts.requests, 0);
+  env.replies.shift()({ tabSwitch: true });
+  await flush();
+  assert.equal(env.document.pictureInPictureElement, env.video);
+});
+
+test('popup cancels entry before the window appears', async () => {
   const env = setup({ deferredEntry: true });
-  await env.visibility('hidden');
-  env.native();
-  const response = env.toggle();
+  await enterByTabSwitch(env);
+  const result = env.toggle();
   env.finishEntry();
-  const result = await response;
-  assert.equal(result.ok, true);
+  assert.equal((await result).ok, true);
   assert.equal(env.document.pictureInPictureElement, null);
-  env.native();
-  assert.equal(env.counts.requests, 1);
 });
 
-test('entry is blocked while exit is pending and duplicate exits are coalesced', async () => {
-  const env = setup({ deferredExit: true });
-  await env.visibility('hidden');
-  env.native();
+test('returning while entry is pending closes the resulting window', async () => {
+  const env = setup({ deferredEntry: true });
+  await enterByTabSwitch(env);
+  await env.visibility('visible');
+  env.finishEntry();
   await flush();
+  assert.equal(env.document.pictureInPictureElement, null);
+});
+
+test('duplicate exit commands do not reopen or issue concurrent exits', async () => {
+  const env = setup({ deferredExit: true });
+  await enterByTabSwitch(env);
   const first = env.toggle();
   const second = env.toggle();
-  env.native();
-  assert.equal(env.counts.requests, 1);
   assert.equal(env.counts.exits, 1);
   env.finishExit();
   assert.equal((await first).ok, true);
@@ -243,32 +155,20 @@ test('entry is blocked while exit is pending and duplicate exits are coalesced',
   assert.equal(env.document.pictureInPictureElement, null);
 });
 
-test('popup reports actual exit failure instead of false success', async () => {
+test('failed browser exit is reported without claiming success', async () => {
   const env = setup({ exitFails: true });
-  await env.visibility('hidden');
-  env.native();
-  await flush();
+  await enterByTabSwitch(env);
   const result = await env.toggle();
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'exit-failed');
   assert.equal(result.error, 'InvalidStateError');
-  assert.equal(result.state, 'pip');
 });
 
-test('unknown native action reason does not open a window', async () => {
-  const env = setup();
-  env.native('unknown');
+test('switching apps does not enter PiP', async () => {
+  const env = setup({ deferredReply: true });
+  env.gesture();
+  await env.visibility('hidden');
+  env.replies.shift()({ tabSwitch: false });
   await flush();
   assert.equal(env.counts.requests, 0);
-});
-
-
-test('disabling automatic PiP does not prevent the browser manual control from exiting', async () => {
-  const env = setup();
-  env.native('other');
-  await flush();
-  env.change({ enabled: false });
-  env.native('other');
-  await flush();
-  assert.equal(env.document.pictureInPictureElement, null);
 });

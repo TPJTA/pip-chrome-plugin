@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "自动画中画 · Auto PiP on Tab Switch",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "视频播放时切换到其他标签页，自动进入画中画浮窗；切换到其他应用不会触发。控制面板可一键开关。",
   "permissions": ["storage"],
   "host_permissions": ["<all_urls>"],

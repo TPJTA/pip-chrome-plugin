@@ -4,6 +4,8 @@
  * 两个开关都写进 chrome.storage.sync，content.js 会实时收到变更。
  */
 
+document.getElementById('version').textContent = `v${chrome.runtime.getManifest().version}`;
+
 const DEFAULTS = { enabled: true, exitOnReturn: true };
 
 const toggleEls = {
@@ -93,7 +95,7 @@ async function refreshStatus() {
   }
   setStatus(reply.state);
   if (reply.needsGesture && reply.state !== 'pip') {
-    statusTextEl.textContent = '浏览器要求新的页面交互，请检查自动画中画权限';
+    statusTextEl.textContent = '浏览器要求再次点击视频，自动进入暂不可用';
   }
 }
 
@@ -125,7 +127,7 @@ testBtn.addEventListener('click', async () => {
   if (reply.reason === 'exit-failed') {
     showHint(`浏览器未能退出画中画（${reply.error || '未知错误'}）。请刷新视频页面后重试。`);
   } else if (reply.reason === 'needs-gesture') {
-    showHint('浏览器缺少本次操作所需的用户交互。连续自动浮窗请在网站设置中允许「自动画中画」，并保持视频有声播放。');
+    showHint('浏览器需要新的页面交互，请使用视频自身的画中画按钮。当前版本暂不保证连续切换时自动浮窗。');
   } else {
     showHint('没有检测到正在播放的视频，请先播放视频。');
   }

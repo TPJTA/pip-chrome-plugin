@@ -3,7 +3,7 @@
  *
  * 在每个 frame 里运行（all_frames），职责：
  *   1. 找到「正在播放」的视频（暂停的、只做了铺垫的、装饰性背景动画都不算）
- *   2. 优先响应浏览器的自动画中画回调，旧浏览器使用 visibilitychange
+ *   2. 页面隐藏时向后台确认是否切换了标签页
  *   3. 后台核对是否切标签页，清理误触发或返回期间完成的浮窗
  *   4. 回到标签页时按设置决定是否退出画中画
  *   5. 响应控制面板的状态查询与手动切换
@@ -20,7 +20,6 @@
   let needsGesture = false;
   let entering = null;
   let visibilityVersion = 0;
-  let nativeAutoPip = false;
   let exiting = null;
   let operationVersion = 0;
   let autoSuppressed = false;
@@ -122,7 +121,7 @@
 
   /* ------------------------------------------------------------ 画中画操作 -- */
 
-  function enterPictureInPicture({ automatic = false, verifyTab = false } = {}) {
+  function enterPictureInPicture({ automatic = false } = {}) {
     if (!settings.enabled || !document.pictureInPictureEnabled) return Promise.resolve(false);
     if (exiting || (automatic && autoSuppressed)) return Promise.resolve(false);
     if (entering) return entering;
@@ -132,7 +131,7 @@
     if (!video) return Promise.resolve(false);
 
     const version = operationVersion;
-    // 必须在原生 Media Session 回调内直接请求，不能先等后台消息而丢失激活。
+    // 普通 PiP 仍受浏览器短暂用户激活限制，不接管网站的媒体会话。
     entering = (async () => {
       try {
         await video.requestPictureInPicture();
@@ -143,10 +142,8 @@
           if (document.pictureInPictureElement === video) await exitPictureInPicture();
           return false;
         }
-        const reply = verifyTab ? await askServiceWorker({ type: 'pageHidden' }) : null;
         const returned = document.visibilityState === 'visible' && settings.exitOnReturn;
-        const wrongTab = verifyTab && (!reply || !reply.tabSwitch);
-        if (version !== operationVersion || (automatic && (!settings.enabled || returned || wrongTab))) {
+        if (version !== operationVersion || (automatic && (!settings.enabled || returned))) {
           // 只清理本次打开的视频，避免关闭页面后来打开的其他画中画。
           if (document.pictureInPictureElement === video) await exitPictureInPicture();
           return false;
@@ -231,7 +228,6 @@
         enabled: settings.enabled,
         state: currentState(),
         pipAvailable: !!document.pictureInPictureEnabled,
-        nativeAutoPip,
         needsGesture,
         lastError
       });
@@ -246,28 +242,8 @@
     return undefined;
   });
 
-  /* ------------------------------------------------------ 原生自动画中画 -- */
-
-  // 原生自动画中画只支持顶层媒体。子 frame 保留普通 API 路径。
-  // 不做「进入再退出」预热：普通 PiP 请求会消耗短暂激活，无法永久解锁。
-  if (window.top === window && navigator.mediaSession && document.pictureInPictureEnabled) {
-    try {
-      navigator.mediaSession.setActionHandler('enterpictureinpicture', (details) => {
-        if (details.reason === 'contentoccluded') {
-          if (!settings.enabled) return;
-          // Chrome 原生自动 PiP 会在返回时关闭。需要保留浮窗时用旧路径。
-          if (!settings.exitOnReturn || document.visibilityState !== 'hidden') return;
-          void enterPictureInPicture({ automatic: true, verifyTab: true });
-        } else if (details.reason === 'other') {
-          // 手动按钮是切换操作，已有窗口时必须退出，不能只调用进入函数。
-          void togglePictureInPicture();
-        }
-      });
-      nativeAutoPip = true;
-    } catch (_) {
-      // 旧版 Chrome 不支持这个 action，保留需要短暂用户激活的路径。
-    }
-  }
+  // 不注册或清空 Media Session handler：它属于网站和浏览器的媒体控制。
+  // 旧版注入的 handler 必须通过重新加载扩展后刷新页面来清除。
 
   /* ------------------------------------------------------------ 主流程 -- */
 
@@ -282,8 +258,6 @@
     }
 
     if (!settings.enabled) return;
-    // 避免普通请求抢先消耗激活，或与浏览器原生回调同时打开浮窗。
-    if (nativeAutoPip && settings.exitOnReturn) return;
     if (!pickVideo()) return; // 需求①：只有视频在播放时才处理
 
     const reply = await askServiceWorker({ type: 'pageHidden' });
