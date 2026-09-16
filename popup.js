@@ -1,15 +1,14 @@
 /**
  * 自动画中画 — 控制面板逻辑
  *
- * 三个开关都写进 chrome.storage.sync，content.js 会实时收到变更。
+ * 两个开关都写进 chrome.storage.sync，content.js 会实时收到变更。
  */
 
-const DEFAULTS = { enabled: true, exitOnReturn: true, compatPriming: false };
+const DEFAULTS = { enabled: true, exitOnReturn: true };
 
 const toggleEls = {
   enabled: document.getElementById('enabled'),
-  exitOnReturn: document.getElementById('exitOnReturn'),
-  compatPriming: document.getElementById('compatPriming')
+  exitOnReturn: document.getElementById('exitOnReturn')
 };
 
 const statusEl = document.getElementById('status');
@@ -93,6 +92,9 @@ async function refreshStatus() {
     return;
   }
   setStatus(reply.state);
+  if (reply.needsGesture && reply.state !== 'pip') {
+    statusTextEl.textContent = '浏览器要求新的页面交互，请检查自动画中画权限';
+  }
 }
 
 /* -------------------------------------------------------------- 交互 -- */
@@ -121,7 +123,7 @@ testBtn.addEventListener('click', async () => {
   if (reply.ok) return;
 
   if (reply.reason === 'needs-gesture') {
-    showHint('浏览器要求先在页面上点一下（例如点一下播放），然后再试。');
+    showHint('浏览器缺少本次操作所需的用户交互。连续自动浮窗请在网站设置中允许「自动画中画」，并保持视频有声播放。');
   } else {
     showHint('没有检测到正在播放的视频，请先播放视频。');
   }

@@ -3,8 +3,8 @@
  *
  * 在每个 frame 里运行（all_frames），职责：
  *   1. 找到「正在播放」的视频（暂停的、只做了铺垫的、装饰性背景动画都不算）
- *   2. 页面变为不可见时，问后台这是不是一次「切标签页」
- *   3. 是 → 请求进入画中画；不是（切应用 / 最小化）→ 什么都不做
+ *   2. 优先响应浏览器的自动画中画回调，旧浏览器使用 visibilitychange
+ *   3. 后台核对是否切标签页，清理误触发或返回期间完成的浮窗
  *   4. 回到标签页时按设置决定是否退出画中画
  *   5. 响应控制面板的状态查询与手动切换
  */
@@ -13,13 +13,14 @@
 
   const DEFAULTS = {
     enabled: true, // 主开关：切标签页时是否自动进入画中画
-    exitOnReturn: true, // 回到该标签页时是否自动退出画中画
-    compatPriming: false // 兼容模式：必要时做一次「手势预热」
+    exitOnReturn: true // 回到该标签页时是否自动退出画中画
   };
 
   let settings = { ...DEFAULTS };
-  let needsPriming = false; // 曾经因为缺少用户手势被拒
-  let primingAttempted = false;
+  let needsGesture = false;
+  let entering = null;
+  let visibilityVersion = 0;
+  let nativeAutoPip = false;
 
   /* ------------------------------------------------------------ 设置同步 -- */
 
@@ -108,23 +109,38 @@
 
   /* ------------------------------------------------------------ 画中画操作 -- */
 
-  async function enterPictureInPicture() {
-    if (!settings.enabled) return false;
-    if (!document.pictureInPictureEnabled) return false;
-    if (document.pictureInPictureElement) return true;
+  function enterPictureInPicture({ automatic = false, verifyTab = false } = {}) {
+    if (!settings.enabled || !document.pictureInPictureEnabled) return Promise.resolve(false);
+    if (entering) return entering;
+    if (document.pictureInPictureElement) return Promise.resolve(true);
 
     const video = pickVideo();
-    if (!video) return false;
+    if (!video) return Promise.resolve(false);
 
-    try {
-      await video.requestPictureInPicture();
-      needsPriming = false;
-      return true;
-    } catch (error) {
-      // Chrome 要求「文档有过用户交互」；记下来，交给兼容模式处理
-      if (error && error.name === 'NotAllowedError') needsPriming = true;
-      return false;
-    }
+    // 必须在原生 Media Session 回调内直接请求，不能先等后台消息而丢失激活。
+    entering = (async () => {
+      try {
+        await video.requestPictureInPicture();
+        needsGesture = false;
+        const reply = verifyTab ? await askServiceWorker({ type: 'pageHidden' }) : null;
+        const returned = document.visibilityState === 'visible' && settings.exitOnReturn;
+        const wrongTab = verifyTab && (!reply || !reply.tabSwitch);
+        if (automatic && (!settings.enabled || returned || wrongTab)) {
+          // 只清理本次打开的视频，避免关闭页面后来打开的其他画中画。
+          if (document.pictureInPictureElement === video) await exitPictureInPicture();
+          return false;
+        }
+        return true;
+      } catch (error) {
+        needsGesture = error?.name === 'NotAllowedError';
+        return false;
+      }
+    })();
+    const request = entering;
+    request.finally(() => {
+      if (entering === request) entering = null;
+    });
+    return request;
   }
 
   async function exitPictureInPicture() {
@@ -163,7 +179,9 @@
       sendResponse({
         enabled: settings.enabled,
         state: currentState(),
-        pipAvailable: !!document.pictureInPictureEnabled
+        pipAvailable: !!document.pictureInPictureEnabled,
+        nativeAutoPip,
+        needsGesture
       });
       return undefined;
     }
@@ -179,7 +197,7 @@
         sendResponse({
           ok,
           state: currentState(),
-          reason: ok ? null : needsPriming ? 'needs-gesture' : 'no-video'
+          reason: ok ? null : needsGesture ? 'needs-gesture' : 'no-video'
         });
       })();
       return true; // 异步回复
@@ -188,50 +206,45 @@
     return undefined;
   });
 
-  /* ------------------------------------------------------ 兼容模式预热逻辑 -- */
+  /* ------------------------------------------------------ 原生自动画中画 -- */
 
-  /**
-   * 极少数页面（多为自动播放、用户从未点过页面的场景）首次切换会因缺少
-   * 用户手势而失败。开启兼容模式后，下一次用户在页面上的交互会做一次
-   * 「进入 + 立刻退出」的预热，为后续切换铺路。
-   */
-  function primeOnGesture() {
-    if (!settings.enabled || !settings.compatPriming) return;
-    if (!needsPriming || primingAttempted) return;
-    if (!document.pictureInPictureEnabled) return;
-    if (document.pictureInPictureElement) return;
-
-    const video = pickVideo();
-    if (!video) return;
-
-    primingAttempted = true;
-    (async () => {
-      try {
-        await video.requestPictureInPicture();
-        await document.exitPictureInPicture();
-        needsPriming = false;
-      } catch (_) {
-        primingAttempted = false; // 允许之后的手势再试一次
-      }
-    })();
-  }
-
-  for (const type of ['pointerdown', 'keydown']) {
-    document.addEventListener(type, primeOnGesture, true);
+  // 原生自动画中画只支持顶层媒体。子 frame 保留普通 API 路径。
+  // 不做「进入再退出」预热：普通 PiP 请求会消耗短暂激活，无法永久解锁。
+  if (window.top === window && navigator.mediaSession && document.pictureInPictureEnabled) {
+    try {
+      navigator.mediaSession.setActionHandler('enterpictureinpicture', (details) => {
+        if (!settings.enabled) return;
+        if (details.reason === 'contentoccluded') {
+          // Chrome 原生自动 PiP 会在返回时关闭。需要保留浮窗时用旧路径。
+          if (!settings.exitOnReturn || document.visibilityState !== 'hidden') return;
+          void enterPictureInPicture({ automatic: true, verifyTab: true });
+        } else {
+          // 浏览器媒体控件中的手动画中画操作。
+          void enterPictureInPicture();
+        }
+      });
+      nativeAutoPip = true;
+    } catch (_) {
+      // 旧版 Chrome 不支持这个 action，保留需要短暂用户激活的路径。
+    }
   }
 
   /* ------------------------------------------------------------ 主流程 -- */
 
   document.addEventListener('visibilitychange', async () => {
+    const version = ++visibilityVersion;
     if (document.visibilityState === 'visible') {
       if (settings.exitOnReturn) await exitPictureInPicture();
       return;
     }
 
     if (!settings.enabled) return;
+    // 避免普通请求抢先消耗激活，或与浏览器原生回调同时打开浮窗。
+    if (nativeAutoPip && settings.exitOnReturn) return;
     if (!pickVideo()) return; // 需求①：只有视频在播放时才处理
 
     const reply = await askServiceWorker({ type: 'pageHidden' });
-    if (reply && reply.tabSwitch) await enterPictureInPicture();
+    if (version !== visibilityVersion || document.visibilityState !== 'hidden') return;
+    if (reply && reply.tabSwitch) await enterPictureInPicture({ automatic: true });
   });
 })();

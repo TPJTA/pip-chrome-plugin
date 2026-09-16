@@ -63,7 +63,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 /** 首次安装时把默认值写进 storage，让 popup 一打开就有确定状态。 */
 chrome.runtime.onInstalled.addListener(() => {
-  const DEFAULTS = { enabled: true, exitOnReturn: true, compatPriming: false };
+  const DEFAULTS = { enabled: true, exitOnReturn: true };
   chrome.storage.sync.get(DEFAULTS, (stored) => {
     chrome.storage.sync.set(stored);
   });
