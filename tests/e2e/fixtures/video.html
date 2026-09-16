@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Auto PiP E2E Video Fixture</title>
+</head>
+<body>
+  <button id="start" type="button">播放测试视频</button>
+  <p id="ready" data-ready="false" data-playing="false">正在准备视频</p>
+  <p>进入画中画次数：<output id="pip-enter-count">0</output></p>
+  <p>退出画中画次数：<output id="pip-leave-count">0</output></p>
+  <canvas id="source" width="640" height="360" hidden></canvas>
+  <video id="video" width="640" height="360" muted playsinline></video>
+  <script>
+    const canvas = document.querySelector('#source');
+    const context = canvas.getContext('2d');
+    const video = document.querySelector('#video');
+    const ready = document.querySelector('#ready');
+    let frame = 0;
+
+    function draw() {
+      context.fillStyle = `hsl(${frame++ % 360} 70% 45%)`;
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.fillStyle = 'white';
+      context.font = '48px sans-serif';
+      context.fillText('Auto PiP E2E', 130, 190);
+      requestAnimationFrame(draw);
+    }
+    draw();
+    video.srcObject = canvas.captureStream(30);
+    video.addEventListener('loadedmetadata', () => { ready.dataset.ready = 'true'; });
+    video.addEventListener('playing', () => {
+      ready.dataset.playing = 'true';
+      ready.textContent = '测试视频正在播放';
+    });
+    video.addEventListener('enterpictureinpicture', () => {
+      const output = document.querySelector('#pip-enter-count');
+      output.textContent = String(Number(output.textContent) + 1);
+    });
+    video.addEventListener('leavepictureinpicture', () => {
+      const output = document.querySelector('#pip-leave-count');
+      output.textContent = String(Number(output.textContent) + 1);
+    });
+    document.querySelector('#start').addEventListener('click', () => video.play());
+  </script>
+</body>
+</html>

@@ -6,11 +6,17 @@
   "description": "Chrome 扩展「自动画中画」——视频播放中切换到其他标签页自动进入画中画",
   "scripts": {
     "test": "node --test",
+    "test:unit": "node --test tests/content.test.mjs",
+    "test:e2e": "node --test tests/e2e/playwright.e2e.mjs",
+    "e2e:install": "playwright install chromium",
     "icons": "node tools/gen-icons.mjs",
     "package": "node tools/package.mjs",
     "build": "node tools/gen-icons.mjs && node tools/package.mjs"
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
   }
 }

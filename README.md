@@ -86,14 +86,20 @@ Netflix 等受 DRM 保护的内容可能拒绝进入画中画。
 
 ## 构建与打包
 
-不需要 `npm install`——脚本只用 Node 标准库，克隆下来就能跑：
+扩展的构建脚本只用 Node 标准库；运行单元测试无需安装依赖。浏览器 E2E 使用 Playwright 1.63（需要 Node.js 20+），需要先安装开发依赖和测试用 Chromium：
 
 ```bash
-npm test          # 事件、短暂激活和异步竞争回归测试
+npm test          # 事件、短暂激活和异步竞争单元测试
+npm install       # 首次运行 E2E 时安装 Playwright
+npm run e2e:install
+npm run test:e2e  # Playwright 加载真实扩展并执行 Node 断言
 npm run icons     # 重新生成 icons/ 下的四个 PNG
 npm run package   # 打包成 build/auto-pip-on-tab-switch-<version>.zip
 npm run build     # 上面两步一起跑
 ```
+
+E2E 默认使用 headed Chromium，以便验证系统画中画窗口；整个流程只通过 Playwright 和 Node 断言，不依赖人工操作或目测结果。
+测试使用独立的临时浏览器配置，结束后自动清理。仅在环境确认支持扩展和画中画的新无头模式时，才设置 `PLAYWRIGHT_HEADLESS=1`。
 
 打包走白名单（`tools/package.mjs` 里的 `INCLUDE`），只收进扩展运行时需要的文件，
 README、docs、tools 都不会进包，产物可直接上传 Chrome 应用商店或解压分发。
