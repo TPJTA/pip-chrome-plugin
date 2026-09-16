@@ -21,6 +21,19 @@
   let entering = null;
   let visibilityVersion = 0;
   let nativeAutoPip = false;
+  let exiting = null;
+  let operationVersion = 0;
+  let autoSuppressed = false;
+  let lastVisibility = document.visibilityState;
+  let lastError = null;
+
+  function cancelAutomaticEntry() {
+    autoSuppressed = true;
+    operationVersion++;
+  }
+
+  // 用户通过视频菜单或浮窗关闭按钮退出后，本轮隐藏期间不得重新打开。
+  document.addEventListener('leavepictureinpicture', cancelAutomaticEntry, true);
 
   /* ------------------------------------------------------------ 设置同步 -- */
 
@@ -111,21 +124,29 @@
 
   function enterPictureInPicture({ automatic = false, verifyTab = false } = {}) {
     if (!settings.enabled || !document.pictureInPictureEnabled) return Promise.resolve(false);
+    if (exiting || (automatic && autoSuppressed)) return Promise.resolve(false);
     if (entering) return entering;
     if (document.pictureInPictureElement) return Promise.resolve(true);
 
     const video = pickVideo();
     if (!video) return Promise.resolve(false);
 
+    const version = operationVersion;
     // 必须在原生 Media Session 回调内直接请求，不能先等后台消息而丢失激活。
     entering = (async () => {
       try {
         await video.requestPictureInPicture();
         needsGesture = false;
+        lastError = null;
+        // 退出优先于尚未完成的进入请求，且无需等待后台核对结果。
+        if (version !== operationVersion) {
+          if (document.pictureInPictureElement === video) await exitPictureInPicture();
+          return false;
+        }
         const reply = verifyTab ? await askServiceWorker({ type: 'pageHidden' }) : null;
         const returned = document.visibilityState === 'visible' && settings.exitOnReturn;
         const wrongTab = verifyTab && (!reply || !reply.tabSwitch);
-        if (automatic && (!settings.enabled || returned || wrongTab)) {
+        if (version !== operationVersion || (automatic && (!settings.enabled || returned || wrongTab))) {
           // 只清理本次打开的视频，避免关闭页面后来打开的其他画中画。
           if (document.pictureInPictureElement === video) await exitPictureInPicture();
           return false;
@@ -133,6 +154,7 @@
         return true;
       } catch (error) {
         needsGesture = error?.name === 'NotAllowedError';
+        lastError = error?.name || 'enter-failed';
         return false;
       }
     })();
@@ -143,13 +165,42 @@
     return request;
   }
 
-  async function exitPictureInPicture() {
-    if (!document.pictureInPictureElement) return;
-    try {
-      await document.exitPictureInPicture();
-    } catch (_) {
-      /* 视频可能已被用户手动关闭浮窗 */
+  function exitPictureInPicture() {
+    cancelAutomaticEntry();
+    if (exiting) return exiting;
+    if (!document.pictureInPictureElement) return Promise.resolve(true);
+    exiting = (async () => {
+      try {
+        await document.exitPictureInPicture();
+        const ok = !document.pictureInPictureElement;
+        lastError = ok ? null : 'exit-failed';
+        return ok;
+      } catch (error) {
+        // 另一条退出路径可能已关闭窗口；否则必须向面板报告真实失败。
+        if (!document.pictureInPictureElement) return true;
+        lastError = error?.name || 'exit-failed';
+        return false;
+      }
+    })();
+    const request = exiting;
+    request.finally(() => {
+      if (exiting === request) exiting = null;
+    });
+    return request;
+  }
+
+  async function togglePictureInPicture() {
+    if (document.pictureInPictureElement || entering || exiting) {
+      const pending = entering;
+      const ok = await exitPictureInPicture();
+      // 若打开尚未完成，由进入请求的版本检查负责收回，再返回真实状态。
+      if (pending) await pending;
+      return { ok: ok && !document.pictureInPictureElement, state: currentState(),
+        reason: document.pictureInPictureElement ? 'exit-failed' : null, error: lastError };
     }
+    const ok = await enterPictureInPicture();
+    return { ok, state: currentState(),
+      reason: ok ? null : needsGesture ? 'needs-gesture' : 'no-video', error: lastError };
   }
 
   /* ---------------------------------------------------------------- 通信 -- */
@@ -181,25 +232,14 @@
         state: currentState(),
         pipAvailable: !!document.pictureInPictureEnabled,
         nativeAutoPip,
-        needsGesture
+        needsGesture,
+        lastError
       });
       return undefined;
     }
 
     if (message.type === 'pip:toggle') {
-      (async () => {
-        if (document.pictureInPictureElement) {
-          await exitPictureInPicture();
-          sendResponse({ ok: true, state: currentState() });
-          return;
-        }
-        const ok = await enterPictureInPicture();
-        sendResponse({
-          ok,
-          state: currentState(),
-          reason: ok ? null : needsGesture ? 'needs-gesture' : 'no-video'
-        });
-      })();
+      void togglePictureInPicture().then(sendResponse);
       return true; // 异步回复
     }
 
@@ -213,14 +253,14 @@
   if (window.top === window && navigator.mediaSession && document.pictureInPictureEnabled) {
     try {
       navigator.mediaSession.setActionHandler('enterpictureinpicture', (details) => {
-        if (!settings.enabled) return;
         if (details.reason === 'contentoccluded') {
+          if (!settings.enabled) return;
           // Chrome 原生自动 PiP 会在返回时关闭。需要保留浮窗时用旧路径。
           if (!settings.exitOnReturn || document.visibilityState !== 'hidden') return;
           void enterPictureInPicture({ automatic: true, verifyTab: true });
-        } else {
-          // 浏览器媒体控件中的手动画中画操作。
-          void enterPictureInPicture();
+        } else if (details.reason === 'other') {
+          // 手动按钮是切换操作，已有窗口时必须退出，不能只调用进入函数。
+          void togglePictureInPicture();
         }
       });
       nativeAutoPip = true;
@@ -233,6 +273,9 @@
 
   document.addEventListener('visibilitychange', async () => {
     const version = ++visibilityVersion;
+    const wasVisible = lastVisibility === 'visible';
+    lastVisibility = document.visibilityState;
+    if (wasVisible && lastVisibility === 'hidden') autoSuppressed = false;
     if (document.visibilityState === 'visible') {
       if (settings.exitOnReturn) await exitPictureInPicture();
       return;
@@ -244,7 +287,7 @@
     if (!pickVideo()) return; // 需求①：只有视频在播放时才处理
 
     const reply = await askServiceWorker({ type: 'pageHidden' });
-    if (version !== visibilityVersion || document.visibilityState !== 'hidden') return;
+    if (version !== visibilityVersion || document.visibilityState !== 'hidden' || autoSuppressed) return;
     if (reply && reply.tabSwitch) await enterPictureInPicture({ automatic: true });
   });
 })();

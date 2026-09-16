@@ -6,10 +6,10 @@ import test from 'node:test';
 const source = readFileSync(new URL('../content.js', import.meta.url), 'utf8');
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-function setup({ supported = true, settings = {}, deferredReply = false, deferredEntry = false } = {}) {
+function setup({ supported = true, settings = {}, deferredReply = false, deferredEntry = false, deferredExit = false, exitFails = false } = {}) {
   const events = new Map();
   const replies = [];
-  let action, message, change, activation = false, finishEntry;
+  let action, message, change, activation = false, finishEntry, finishExit;
   const counts = { requests: 0, exits: 0 };
   const video = {
     paused: false, ended: false, readyState: 4, currentTime: 10,
@@ -28,7 +28,13 @@ function setup({ supported = true, settings = {}, deferredReply = false, deferre
     visibilityState: 'visible', pictureInPictureEnabled: true, pictureInPictureElement: null,
     querySelectorAll: selector => selector === 'video' ? [video] : [],
     addEventListener: (type, listener) => events.set(type, listener),
-    async exitPictureInPicture() { counts.exits++; document.pictureInPictureElement = null; }
+    async exitPictureInPicture() {
+      counts.exits++;
+      if (exitFails) throw Object.assign(new Error('exit rejected'), { name: 'InvalidStateError' });
+      if (deferredExit) await new Promise(resolve => { finishExit = resolve; });
+      document.pictureInPictureElement = null;
+      events.get('leavepictureinpicture')?.();
+    }
   };
   const window = { innerWidth: 1500, innerHeight: 900 };
   window.top = window;
@@ -53,12 +59,15 @@ function setup({ supported = true, settings = {}, deferredReply = false, deferre
     counts, document, video, replies,
     gesture() { activation = true; },
     finishEntry() { finishEntry(); },
+    finishExit() { finishExit(); },
+    browserClose() { document.pictureInPictureElement = null; events.get('leavepictureinpicture')?.(); },
+    toggle() { return new Promise(resolve => message({ type: 'pip:toggle' }, {}, resolve)); },
     async visibility(state) { document.visibilityState = state; void events.get('visibilitychange')(); await flush(); },
-    native() {
+    native(reason = 'contentoccluded') {
       // Browser-provided activation exists during the callback. A background round trip
       // before requestPictureInPicture would lose it in this regression harness.
       activation = true;
-      action({ reason: 'contentoccluded' });
+      action({ reason });
       activation = false;
     },
     change(values) { change(Object.fromEntries(Object.entries(values).map(([k, v]) => [k, { newValue: v }])), 'sync'); },
@@ -157,4 +166,109 @@ test('keep-floating setting uses legacy path and does not close on return', asyn
   assert.equal(env.counts.requests, 1);
   await env.visibility('visible');
   assert.equal(env.document.pictureInPictureElement, env.video);
+});
+
+
+test('manual media control toggles an existing window off instead of trying to enter again', async () => {
+  const env = setup();
+  env.native('other');
+  await flush();
+  assert.equal(env.document.pictureInPictureElement, env.video);
+  env.native('other');
+  await flush();
+  assert.equal(env.document.pictureInPictureElement, null);
+  assert.deepEqual(env.counts, { requests: 1, exits: 1 });
+});
+
+test('popup exit blocks native reopen until the next genuine tab departure', async () => {
+  const env = setup();
+  await env.visibility('hidden');
+  env.native();
+  await flush();
+  const result = await env.toggle();
+  assert.equal(result.ok, true);
+  env.native();
+  await flush();
+  assert.equal(env.document.pictureInPictureElement, null);
+  assert.equal(env.counts.requests, 1);
+  // A duplicate hidden event must not rearm automatic entry.
+  await env.visibility('hidden');
+  env.native();
+  assert.equal(env.counts.requests, 1);
+  await env.visibility('visible');
+  await env.visibility('hidden');
+  env.native();
+  await flush();
+  assert.equal(env.document.pictureInPictureElement, env.video);
+});
+
+test('browser close button or video menu prevents automatic reopening', async () => {
+  const env = setup();
+  await env.visibility('hidden');
+  env.native();
+  await flush();
+  env.browserClose();
+  env.native();
+  await flush();
+  assert.equal(env.document.pictureInPictureElement, null);
+  assert.equal(env.counts.requests, 1);
+});
+
+test('popup can cancel an in-flight entry before the window exists', async () => {
+  const env = setup({ deferredEntry: true });
+  await env.visibility('hidden');
+  env.native();
+  const response = env.toggle();
+  env.finishEntry();
+  const result = await response;
+  assert.equal(result.ok, true);
+  assert.equal(env.document.pictureInPictureElement, null);
+  env.native();
+  assert.equal(env.counts.requests, 1);
+});
+
+test('entry is blocked while exit is pending and duplicate exits are coalesced', async () => {
+  const env = setup({ deferredExit: true });
+  await env.visibility('hidden');
+  env.native();
+  await flush();
+  const first = env.toggle();
+  const second = env.toggle();
+  env.native();
+  assert.equal(env.counts.requests, 1);
+  assert.equal(env.counts.exits, 1);
+  env.finishExit();
+  assert.equal((await first).ok, true);
+  assert.equal((await second).ok, true);
+  assert.equal(env.document.pictureInPictureElement, null);
+});
+
+test('popup reports actual exit failure instead of false success', async () => {
+  const env = setup({ exitFails: true });
+  await env.visibility('hidden');
+  env.native();
+  await flush();
+  const result = await env.toggle();
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'exit-failed');
+  assert.equal(result.error, 'InvalidStateError');
+  assert.equal(result.state, 'pip');
+});
+
+test('unknown native action reason does not open a window', async () => {
+  const env = setup();
+  env.native('unknown');
+  await flush();
+  assert.equal(env.counts.requests, 0);
+});
+
+
+test('disabling automatic PiP does not prevent the browser manual control from exiting', async () => {
+  const env = setup();
+  env.native('other');
+  await flush();
+  env.change({ enabled: false });
+  env.native('other');
+  await flush();
+  assert.equal(env.document.pictureInPictureElement, null);
 });

@@ -122,7 +122,9 @@ testBtn.addEventListener('click', async () => {
   await refreshStatus();
   if (reply.ok) return;
 
-  if (reply.reason === 'needs-gesture') {
+  if (reply.reason === 'exit-failed') {
+    showHint(`浏览器未能退出画中画（${reply.error || '未知错误'}）。请刷新视频页面后重试。`);
+  } else if (reply.reason === 'needs-gesture') {
     showHint('浏览器缺少本次操作所需的用户交互。连续自动浮窗请在网站设置中允许「自动画中画」，并保持视频有声播放。');
   } else {
     showHint('没有检测到正在播放的视频，请先播放视频。');
