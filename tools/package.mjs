@@ -21,6 +21,7 @@ const INCLUDE = [
   'manifest.json',
   'background.js',
   'content.js',
+  'native-pip-bridge.js',
   'popup.html',
   'popup.css',
   'popup.js',

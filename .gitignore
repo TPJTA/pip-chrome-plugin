@@ -4,3 +4,6 @@ build/
 # 依赖与系统文件
 node_modules/
 .DS_Store
+
+# 调试探针（未纳入版本控制，交付前删除）
+.probe-*

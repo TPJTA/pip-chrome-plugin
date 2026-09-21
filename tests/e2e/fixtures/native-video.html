@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>native auto picture-in-picture fixture</title>
+</head>
+<body style="margin:0;font:14px sans-serif">
+  <p>file:// 原生自动画中画 fixture</p>
+  <video id="v" playsinline controls style="width:480px;height:270px"></video>
+  <p><button id="play" type="button">播放（唯一一次真实点击）</button></p>
+  <script>
+    /*
+     * 这个 fixture 刻意**不注册** enterpictureinpicture 动作处理器 —— 这正是扩展
+     * 桥接脚本要负责的那条路径：浏览器把自动画中画动作派发给我们注册的
+     * dispatcher，由 isolated world 决定进出。
+     *
+     * 另外两个约束是浏览器源码里写死的资格条件，缺一不可：
+ *   1. 页面必须是 https:// 或 file:// （http://127.0.0.1 直接被拒）；
+ *   2. 媒体必须真的在播、真的出声（WasRecentlyAudible + audio focus）。
+ * 所以这里用唯一一次真实点击录一段带音轨的真实媒体文件再循环播放。
+ *
+ * 「允许网站自动画中画」这个站点授权是 Chrome 弹提示才给的，自动化里拿不到，
+ * 因此下面的断言只描述两种可能结果，而不假设一定会进入窗口模式。
+     */
+    const video = document.querySelector('#v');
+    const canvas = document.createElement('canvas');
+    canvas.width = 480;
+    canvas.height = 270;
+    const painter = canvas.getContext('2d');
+    let frame = 0;
+    setInterval(() => {
+      painter.fillStyle = 'hsl(' + (frame++ % 360) + ' 70% 45%)';
+      painter.fillRect(0, 0, 480, 270);
+      painter.fillStyle = 'white';
+      painter.font = '40px sans-serif';
+      painter.fillText('file auto pip', 120, 150);
+    }, 33);
+
+    /*
+     * 「确实是扩展桥接层促成的进入」只能靠这个信号证明：桥接脚本转发给
+     * isolated world 的 auto-pip:enter 事件。DOM 事件对同源脚本共享，页面
+     * 能收到它；而只有浏览器真的把自动画中画动作派发给我们的 dispatcher 时，
+     * 这个事件才会出现。document 上的进入/退出事件是第二重证据。
+     */
+    const bridges = { nativeCallbacks: 0, enterEvents: 0, leaveEvents: 0 };
+    document.addEventListener('enterpictureinpicture', () => { bridges.enterEvents++; });
+    document.addEventListener('leavepictureinpicture', () => { bridges.leaveEvents++; });
+    document.addEventListener('auto-pip:enter', () => { bridges.nativeCallbacks++; });
+
+    document.querySelector('#play').addEventListener('click', async () => {
+      const audio = new AudioContext();
+      await audio.resume();
+      const destination = audio.createMediaStreamDestination();
+      const osc = audio.createOscillator();
+      const gain = audio.createGain();
+      gain.gain.value = 0.25;
+      osc.frequency.value = 220;
+      osc.connect(gain).connect(destination);
+      osc.start();
+
+      const mixed = new MediaStream([
+        ...canvas.captureStream(30).getVideoTracks(),
+        ...destination.stream.getAudioTracks()
+      ]);
+      const recorder = new MediaRecorder(mixed, { mimeType: 'video/webm' });
+      const chunks = [];
+      recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+      const stopped = new Promise((resolveStop) => { recorder.onstop = resolveStop; });
+      recorder.start();
+      await new Promise((resolveWait) => setTimeout(resolveWait, 2000));
+      recorder.stop();
+      await stopped;
+      await audio.close();
+
+      const blob = new Blob(chunks, { type: 'video/webm' });
+      video.srcObject = null;
+      video.src = URL.createObjectURL(blob);
+      video.loop = true;
+      video.muted = false;
+      await video.play();
+      document.body.dataset.playing = 'true';
+    });
+
+    window.__snapshot = () => {
+      const element = document.pictureInPictureElement;
+      return {
+        visibility: document.visibilityState,
+        pip: element === video ? 'video' : element ? 'other' : 'none',
+        playing: document.body.dataset.playing === 'true' && !video.paused,
+        muted: video.muted,
+        audioDecodedBytes: video.webkitAudioDecodedByteCount,
+        nativeCallbacks: bridges.nativeCallbacks,
+        enterEvents: bridges.enterEvents,
+        leaveEvents: bridges.leaveEvents
+      };
+    };
+  </script>
+</body>
+</html>
